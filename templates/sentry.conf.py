@@ -1,99 +1,299 @@
+# This file is just Python, with a touch of Django which means
+# you can inherit and tweak settings to your hearts content.
 
+# For Docker, the following environment variables are supported:
+#  SENTRY_POSTGRES_HOST
+#  SENTRY_POSTGRES_PORT
+#  SENTRY_DB_NAME
+#  SENTRY_DB_USER
+#  SENTRY_DB_PASSWORD
+#  SENTRY_RABBITMQ_HOST
+#  SENTRY_RABBITMQ_USERNAME
+#  SENTRY_RABBITMQ_PASSWORD
+#  SENTRY_RABBITMQ_VHOST
+#  SENTRY_REDIS_HOST
+#  SENTRY_REDIS_PASSWORD
+#  SENTRY_REDIS_PORT
+#  SENTRY_REDIS_DB
+#  SENTRY_MEMCACHED_HOST
+#  SENTRY_MEMCACHED_PORT
+#  SENTRY_FILESTORE_DIR
+#  SENTRY_SERVER_EMAIL
+#  SENTRY_EMAIL_HOST
+#  SENTRY_EMAIL_PORT
+#  SENTRY_EMAIL_USER
+#  SENTRY_EMAIL_PASSWORD
+#  SENTRY_EMAIL_USE_TLS
+#  SENTRY_ENABLE_EMAIL_REPLIES
+#  SENTRY_SMTP_HOSTNAME
+#  SENTRY_MAILGUN_API_KEY
+#  SENTRY_SINGLE_ORGANIZATION
+#  SENTRY_SECRET_KEY
+#  SLACK_CLIENT_ID
+#  SLACK_CLIENT_SECRET
+#  SLACK_VERIFICATION_TOKEN
+#  GITHUB_APP_ID
+#  GITHUB_API_SECRET
+#  BITBUCKET_CONSUMER_KEY
+#  BITBUCKET_CONSUMER_SECRET
+from sentry.conf.server import *  # NOQA
+
+import os
 import os.path
 
 CONF_ROOT = os.path.dirname(__file__)
 
 DATABASES = {
     'default': {
-        # You can swap out the engine for MySQL easily by changing this value
-        # to ``django.db.backends.mysql`` or to PostgreSQL with
-        # ``django.db.backends.postgresql_psycopg2``
-
-        # If you change this, you'll also need to install the appropriate python
-        # package: psycopg2 (Postgres) or mysql-python
-        'ENGINE': 'django.db.backends.postgresql_psycopg2',
-
-        'NAME': 'sentry',
-        'USER': 'sentry',
-        'PASSWORD': 'sentry',
+        'ENGINE': 'sentry.db.postgres',
+        'NAME': (
+            env('SENTRY_DB_NAME')
+            or env('POSTGRES_ENV_POSTGRES_USER')
+            or 'sentry'
+        ),
+        'USER': (
+            env('SENTRY_DB_USER')
+            or env('POSTGRES_ENV_POSTGRES_USER')
+            or 'sentry'
+        ),
+        'PASSWORD': (
+            env('SENTRY_DB_PASSWORD')
+            or env('POSTGRES_ENV_POSTGRES_PASSWORD')
+            or 'sentry'
+        ),
         'HOST': '127.0.0.1',
-        'PORT': '',
+        'PORT': (
+            env('SENTRY_POSTGRES_PORT')
+            or ''
+        ),
+        'OPTIONS': {
+            'autocommit': True,
+        },
+    },
+}
+
+# You should not change this setting after your database has been created
+# unless you have altered all schemas first
+SENTRY_USE_BIG_INTS = True
+
+# If you're expecting any kind of real traffic on Sentry, we highly recommend
+# configuring the CACHES and Redis settings
+
+###########
+# General #
+###########
+
+# Instruct Sentry that this install intends to be run by a single organization
+# and thus various UI optimizations should be enabled.
+SENTRY_SINGLE_ORGANIZATION = env('SENTRY_SINGLE_ORGANIZATION', True)
+
+#########
+# Redis #
+#########
+
+# Generic Redis configuration used as defaults for various things including:
+# Buffers, Quotas, TSDB
+
+redis = env('SENTRY_REDIS_HOST') or (env('REDIS_PORT_6379_TCP_ADDR') and 'redis') or '127.0.0.1'
+if not redis:
+    raise Exception('Error: REDIS_PORT_6379_TCP_ADDR (or SENTRY_REDIS_HOST) is undefined, did you forget to `--link` a redis container?')
+
+redis_password = env('SENTRY_REDIS_PASSWORD') or ''
+redis_port = env('SENTRY_REDIS_PORT') or '6379'
+redis_db = env('SENTRY_REDIS_DB') or '0'
+
+SENTRY_OPTIONS.update({
+    'redis.clusters': {
+        'default': {
+            'hosts': {
+                0: {
+                    'host': redis,
+                    'password': redis_password,
+                    'port': redis_port,
+                    'db': redis_db,
+                },
+            },
+        },
+    },
+})
+
+#########
+# Cache #
+#########
+
+# Sentry currently utilizes two separate mechanisms. While CACHES is not a
+# requirement, it will optimize several high throughput patterns.
+
+memcached = env('SENTRY_MEMCACHED_HOST') or (env('MEMCACHED_PORT_11211_TCP_ADDR') and 'memcached') or '127.0.0.1'
+if memcached:
+    memcached_port = (
+        env('SENTRY_MEMCACHED_PORT')
+        or '11211'
+    )
+    CACHES = {
+        'default': {
+            'BACKEND': 'django.core.cache.backends.memcached.MemcachedCache',
+            'LOCATION': [memcached + ':' + memcached_port],
+            'TIMEOUT': 3600,
+        }
     }
+
+# A primary cache is required for things such as processing events
+SENTRY_CACHE = 'sentry.cache.redis.RedisCache'
+
+#########
+# Queue #
+#########
+
+# See https://docs.getsentry.com/on-premise/server/queue/ for more
+# information on configuring your queue broker and workers. Sentry relies
+# on a Python framework called Celery to manage queues.
+
+rabbitmq = env('SENTRY_RABBITMQ_HOST') or (env('RABBITMQ_PORT_5672_TCP_ADDR') and 'rabbitmq')
+
+if rabbitmq:
+    BROKER_URL = (
+        'amqp://' + (
+            env('SENTRY_RABBITMQ_USERNAME')
+            or env('RABBITMQ_ENV_RABBITMQ_DEFAULT_USER')
+            or 'guest'
+        ) + ':' + (
+            env('SENTRY_RABBITMQ_PASSWORD')
+            or env('RABBITMQ_ENV_RABBITMQ_DEFAULT_PASS')
+            or 'guest'
+        ) + '@' + rabbitmq + '/' + (
+            env('SENTRY_RABBITMQ_VHOST')
+            or env('RABBITMQ_ENV_RABBITMQ_DEFAULT_VHOST')
+            or '/'
+        )
+    )
+else:
+    BROKER_URL = 'redis://:' + redis_password + '@' + redis + ':' + redis_port + '/' + redis_db
+
+
+###############
+# Rate Limits #
+###############
+
+# Rate limits apply to notification handlers and are enforced per-project
+# automatically.
+
+SENTRY_RATELIMITER = 'sentry.ratelimits.redis.RedisRateLimiter'
+
+##################
+# Update Buffers #
+##################
+
+# Buffers (combined with queueing) act as an intermediate layer between the
+# database and the storage API. They will greatly improve efficiency on large
+# numbers of the same events being sent to the API in a short amount of time.
+# (read: if you send any kind of real data to Sentry, you should enable buffers)
+
+SENTRY_BUFFER = 'sentry.buffer.redis.RedisBuffer'
+
+##########
+# Quotas #
+##########
+
+# Quotas allow you to rate limit individual projects or the Sentry install as
+# a whole.
+
+SENTRY_QUOTAS = 'sentry.quotas.redis.RedisQuota'
+
+########
+# TSDB #
+########
+
+# The TSDB is used for building charts as well as making things like per-rate
+# alerts possible.
+
+SENTRY_TSDB = 'sentry.tsdb.redis.RedisTSDB'
+
+###########
+# Digests #
+###########
+
+# The digest backend powers notification summaries.
+
+SENTRY_DIGESTS = 'sentry.digests.backends.redis.RedisBackend'
+
+################
+# File storage #
+################
+
+# Uploaded media uses these `filestore` settings. The available
+# backends are either `filesystem` or `s3`.
+
+SENTRY_OPTIONS['filestore.backend'] = 'filesystem'
+SENTRY_OPTIONS['filestore.options'] = {
+    'location': env('SENTRY_FILESTORE_DIR'),
 }
 
-# If you're expecting any kind of real traffic on Sentry, we highly recommend configuring
-# the CACHES and Redis settings
+##############
+# Web Server #
+##############
 
-CACHES = {
-     'default': {
-         'BACKEND': 'django_pylibmc.memcached.PyLibMCCache',
-         'LOCATION': ['127.0.0.1:11211'],
-     }
-}
+# If you're using a reverse SSL proxy, you should enable the X-Forwarded-Proto
+# header and set `SENTRY_USE_SSL=1`
 
-# Buffers (combined with queueing) act as an intermediate layer between the database and
-# the storage API. They will greatly improve efficiency on large numbers of the same events
-# being sent to the API in a short amount of time.
-
-# SENTRY_USE_QUEUE = True
-# For more information on queue options, see the documentation for Celery:
-# http://celery.readthedocs.org/en/latest/
-# BROKER_URL = 'redis://localhost:6379'
-
-# SENTRY_BUFFER = 'sentry.buffer.redis.RedisBuffer'
-# SENTRY_BUFFER_OPTIONS = {
-#     'hosts': {
-#         0: {
-#             'host': '127.0.0.1',
-#             'port': 6379,
-#         }
-#     }
-# }
-
-
-SENTRY_KEY = '{{secret_key}}'
-
-# You should configure the absolute URI to Sentry. It will attempt to guess it if you don't
-# but proxies may interfere with this.
-SENTRY_URL_PREFIX = '{{root_url}}'  # No trailing slash!
+if env('SENTRY_USE_SSL', False):
+    SECURE_PROXY_SSL_HEADER = ('HTTP_X_FORWARDED_PROTO', 'https')
+    SESSION_COOKIE_SECURE = True
+    CSRF_COOKIE_SECURE = True
+    SOCIAL_AUTH_REDIRECT_IS_HTTPS = True
 
 SENTRY_WEB_HOST = '127.0.0.1'
 SENTRY_WEB_PORT = 9000
 SENTRY_WEB_OPTIONS = {
-    'workers': 3,  # the number of gunicorn workers
+    'workers': 3,
     'secure_scheme_headers': {'X-FORWARDED-PROTO': 'https'},
 }
 
-# Mail server configuration
+###############
+# Mail Server #
+###############
 
-# For more information check Django's documentation:
-#  https://docs.djangoproject.com/en/1.3/topics/email/?from=olddocs#e-mail-backends
 
-EMAIL_BACKEND = 'django.core.mail.backends.smtp.EmailBackend'
-SERVER_EMAIL = '{{server_email}}'
-EMAIL_HOST = '{{smtp_server}}'
-EMAIL_HOST_PASSWORD = ''
-EMAIL_HOST_USER = ''
-EMAIL_PORT = 25
-EMAIL_USE_TLS = False
+email = env('SENTRY_EMAIL_HOST') or (env('SMTP_PORT_25_TCP_ADDR') and 'smtp')
+SENTRY_OPTIONS['mail.backend'] = 'smtp'
+SENTRY_OPTIONS['mail.host'] = email or '{{smtp_server}}'
+SENTRY_OPTIONS['mail.password'] = env('SENTRY_EMAIL_PASSWORD') or ''
+SENTRY_OPTIONS['mail.username'] = env('SENTRY_EMAIL_USER') or ''
+SENTRY_OPTIONS['mail.port'] = int(env('SENTRY_EMAIL_PORT') or 25)
+SENTRY_OPTIONS['mail.use-tls'] = env('SENTRY_EMAIL_USE_TLS', False)
 
-# http://twitter.com/apps/new
-# It's important that input a callback URL, even if its useless. We have no idea why, consult Twitter.
-TWITTER_CONSUMER_KEY = ''
-TWITTER_CONSUMER_SECRET = ''
+# The email address to send on behalf of
+SENTRY_OPTIONS['mail.from'] = env('SENTRY_SERVER_EMAIL') or '{{server_email}}'
 
-# http://developers.facebook.com/setup/
-FACEBOOK_APP_ID = ''
-FACEBOOK_API_SECRET = ''
+# If you're using mailgun for inbound mail, set your API key and configure a
+# route to forward to /api/hooks/mailgun/inbound/
+SENTRY_OPTIONS['mail.mailgun-api-key'] = env('SENTRY_MAILGUN_API_KEY') or ''
 
-# http://code.google.com/apis/accounts/docs/OAuth2.html#Registering
-GOOGLE_OAUTH2_CLIENT_ID = '1042684111028.apps.googleusercontent.com'
-GOOGLE_OAUTH2_CLIENT_SECRET = 'tUNMns4mfL4Fb7zLJ3byskLj'
+# If you specify a MAILGUN_API_KEY, you definitely want EMAIL_REPLIES
+if SENTRY_OPTIONS['mail.mailgun-api-key']:
+    SENTRY_OPTIONS['mail.enable-replies'] = True
+else:
+    SENTRY_OPTIONS['mail.enable-replies'] = env('SENTRY_ENABLE_EMAIL_REPLIES', False)
 
-# https://github.com/settings/applications/new
-GITHUB_APP_ID = ''
-GITHUB_API_SECRET = ''
+if SENTRY_OPTIONS['mail.enable-replies']:
+    SENTRY_OPTIONS['mail.reply-hostname'] = env('SENTRY_SMTP_HOSTNAME') or ''
 
-# https://trello.com/1/appKey/generate
-TRELLO_API_KEY = ''
-TRELLO_API_SECRET = ''
+#####################
+# SLACK INTEGRATION #
+#####################
+slack = env('SLACK_CLIENT_ID') and env('SLACK_CLIENT_SECRET')
+if slack:
+    SENTRY_OPTIONS['slack.client-id'] = env('SLACK_CLIENT_ID')
+    SENTRY_OPTIONS['slack.client-secret'] = env('SLACK_CLIENT_SECRET')
+    SENTRY_OPTIONS['slack.verification-token'] = env('SLACK_VERIFICATION_TOKEN') or ''
+
+SENTRY_OPTIONS['system.secret-key'] = '{{secret_key}}'
+
+if 'GITHUB_APP_ID' in os.environ:
+    GITHUB_EXTENDED_PERMISSIONS = ['repo']
+    GITHUB_APP_ID = env('GITHUB_APP_ID')
+    GITHUB_API_SECRET = env('GITHUB_API_SECRET')
+
+if 'BITBUCKET_CONSUMER_KEY' in os.environ:
+    BITBUCKET_CONSUMER_KEY = env('BITBUCKET_CONSUMER_KEY')
+    BITBUCKET_CONSUMER_SECRET = env('BITBUCKET_CONSUMER_SECRET')

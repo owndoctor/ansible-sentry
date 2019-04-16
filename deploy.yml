@@ -1,38 +1,38 @@
-- include: parts/user.yml
-- include: parts/db.yml
+- import_playbook: parts/user.yml
+- import_playbook: parts/db.yml
 - hosts: target
   vars_files:
     - vars.yml
   tasks:
     - name: set up packages
-      action: apt pkg=$item state=latest
+      action: apt pkg={{item}} state=latest
       with_items:
         - nginx
         - supervisor
         - python-virtualenv
         - memcached
+        - redis-server
         - libmemcached-dev
+        - gcc
+        - g++
+        - libxml2-dev
     - name: ensure directories
-      action: file state=directory path=$item owner=$user_name group=$group_name
+      action: file state=directory path={{item}} owner={{user_name}} group={{group_name}}
       with_items:
-        - $deploy_root
-        - $deploy_root/conf
+        - "{{deploy_root}}"
+        - "{{deploy_root}}/conf"
     - name: virtualenv
-      action: shell virtualenv $virtualenv creates=$virtualenv
+      action: shell virtualenv {{virtualenv}} creates={{virtualenv}}
     - name: required python packages
-      action: pip name=$item virtualenv=$virtualenv
-      with_items:
-        - psycopg2
-        - python-memcached
-        - django-pylibmc
+      action: pip virtualenv={{virtualenv}} requirements=https://raw.githubusercontent.com/getsentry/sentry/{{sentry_version}}/requirements-base.txt
     - name: install sentry
-      action: shell $virtualenv/bin/easy_install -UZ sentry creates=$virtualenv/bin/sentry
+      action: shell {{virtualenv}}/bin/easy_install -UZ sentry=={{sentry_version}} creates={{virtualenv}}/bin/sentry
     - name: sentry configuration
-      action: template src=templates/sentry.conf.py dest=$sentry_conf_file
+      action: template src=templates/sentry.conf.py dest={{sentry_conf_file}}
       notify: 
         - reload supervisor
     - name: migrate db
-      shell: $virtualenv/bin/sentry --config=$sentry_conf_file upgrade --noinput
+      shell: "{{virtualenv}}/bin/sentry --config={{sentry_conf_file}} upgrade --noinput"
     - name: nginx configuration
       action: template src=templates/nginx-site.j2 dest=/etc/nginx/sites-enabled/sentry.conf
       notify: restart nginx
