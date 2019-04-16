@@ -12,3 +12,8 @@ And then run ansible:
 
 	ansible-playbook -u root -i inventory deploy.yml
 
+And then create the user
+
+	. /opt/sentry/virtualenv/bin/activate
+	sentry --config /opt/sentry/conf/sentry.conf.py createuser
+
