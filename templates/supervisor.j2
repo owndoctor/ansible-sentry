@@ -4,6 +4,7 @@ command={{virtualenv}}/bin/sentry --config={{sentry_conf_file}} start http
 autostart=true
 autorestart=true
 redirect_stderr=true
+user=sentry
 
 [program:sentry-cron]
 directory={{deploy_root}}
@@ -11,6 +12,7 @@ command={{virtualenv}}/bin/sentry --config={{sentry_conf_file}} run cron
 autostart=true
 autorestart=true
 redirect_stderr=true
+user=sentry
 
 [program:sentry-smtp]
 directory={{deploy_root}}
@@ -18,6 +20,7 @@ command={{virtualenv}}/bin/sentry --config={{sentry_conf_file}} run smtp
 autostart=true
 autorestart=true
 redirect_stderr=true
+user=sentry
 
 [program:sentry-worker]
 directory={{deploy_root}}
@@ -25,3 +28,4 @@ command={{virtualenv}}/bin/sentry --config={{sentry_conf_file}} run worker
 autostart=true
 autorestart=true
 redirect_stderr=true
+user=sentry
